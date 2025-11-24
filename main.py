@@ -7,6 +7,8 @@ import os
 import datetime
 from dotenv import load_dotenv
 from pydantic import BaseModel
+from langchain_core.messages import HumanMessage
+
 load_dotenv()
 
 app = FastAPI()
@@ -35,11 +37,16 @@ async def query_travel_agent(query:QueryRequest):
 
         print(f"Graph saved as 'my_graph.png' in {os.getcwd()}")
         # Assuming request is a pydantic object like: {"question": "your text"}
-        messages={"messages": [query.question]}
+        messages = {"messages": [HumanMessage(content=query.question)]}
         output = react_app.invoke(messages)
 
         # If result is dict with messages:
         if isinstance(output, dict) and "messages" in output:
+            print("DEBUG: Full conversation history:")
+            for msg in output["messages"]:
+                print(f" - {type(msg).__name__}: {msg.content}")
+                if hasattr(msg, 'tool_calls') and msg.tool_calls:
+                    print(f"   Tool Calls: {msg.tool_calls}")
             final_output = output["messages"][-1].content  # Last AI response
         else:
             final_output = str(output)
@@ -47,3 +54,7 @@ async def query_travel_agent(query:QueryRequest):
         return {"answer": final_output}
     except Exception as e:
         return JSONResponse(status_code=500, content={"error": str(e)})
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(app, host="127.0.0.1", port=8000)

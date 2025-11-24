@@ -4,9 +4,9 @@ from prompt_library.prompt import SYSTEM_PROMPT
 from langgraph.graph import StateGraph, MessagesState, END, START
 from langgraph.prebuilt import ToolNode, tools_condition
 from tools.weather_info_tool import WeatherInfoTool
-from tools.place_search_tool import PlaceSearchTool
-from tools.expense_calculator_tool import CalculatorTool
 from tools.currency_conversion_tool import CurrencyConverterTool
+from langchain_core.messages import HumanMessage
+
 
 class GraphBuilder():
     def __init__(self,model_provider: str = "groq"):
@@ -26,6 +26,7 @@ class GraphBuilder():
                            * self.currency_converter_tools.currency_converter_tool_list])
         
         self.llm_with_tools = self.llm.bind_tools(tools=self.tools)
+        print(f"DEBUG: Loaded {len(self.tools)} tools: {[t.name for t in self.tools]}")
         
         self.graph = None
         

@@ -16,6 +16,7 @@ def multiply(a: int, b: int) -> int:
     Returns:
         int: The product of a and b.
     """
+    logger.info(f"🔥 TOOL TRIGGERED: multiply({a}, {b})")
     return a * b
 
 @tool
@@ -30,10 +31,12 @@ def add(a: int, b: int) -> int:
     Returns:
         int: The sum of a and b.
     """
+    logger.info(f"🔥 TOOL TRIGGERED: add({a}, {b})")
     return a + b
 
 @tool
 def currency_converter(from_curr: str, to_curr: str, value: float)->float:
+    logger.info(f"🔥 TOOL TRIGGERED: currency_converter({from_curr}, {to_curr}, {value})")
     os.environ["ALPHAVANTAGE_API_KEY"] = os.getenv('ALPHAVANTAGE_API_KEY')
     alpha_vantage = AlphaVantageAPIWrapper()
     response = alpha_vantage._get_exchange_rate(from_curr, to_curr)
