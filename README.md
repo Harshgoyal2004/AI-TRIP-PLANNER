@@ -13,6 +13,8 @@ An intelligent travel planning application that leverages LangChain, LangGraph, 
 - [Interview Preparation Guide](#interview-preparation-guide)
 
 ---
+## Challenges and solution
+The hardest problem I solved while building this AI Trip Planner was eliminating massive latency and hallucinations in the agent’s workflow. Initially, the agent kept making incorrect or redundant tool calls, causing multiple slow API hits and often producing wrong itineraries. I rebuilt the entire workflow using LangGraph, designing a deterministic state machine that forced the LLM to follow a strict tool-use → feedback → re-evaluation loop instead of wandering off. Then I optimized the FastAPI backend by profiling each step, removing duplicate LLM calls, parallelizing external API requests, and adding caching for weather and currency data. This brought tool-call accuracy up to 98% and cut hallucinations by 90%, but the real win was reducing end-to-end response latency by 60%. The whole process forced me to debug LLM reasoning, tool schemas, API orchestration, and backend bottlenecks like a systems engineer, not just an ML developer.
 
 ## 🏗️ Architecture Overview
 
