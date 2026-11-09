@@ -1,7 +1,0 @@
-llm:
-  openai:
-    provider: "openai"
-    model_name: "gpt-4o-mini"
-  groq:
-    provider: "groq"
-    model_name: "llama-3.3-70b-versatile"
