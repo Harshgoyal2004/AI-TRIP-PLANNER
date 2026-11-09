@@ -1,5 +1,7 @@
 # 🚀 Deployment Guide
 
+**Live:** backend https://ai-trip-planner-eyxy.onrender.com · frontend https://harsh-ai-trip-planner.streamlit.app
+
 ## Backend Deployment (Render)
 
 ### Option 1: Using Render Dashboard (Recommended)
@@ -114,7 +116,7 @@ git push heroku main
 Before deploying, test locally:
 
 ```bash
-# Terminal 1: Start backend
+# Terminal 1: Start backend (http://localhost:8001)
 python main.py
 
 # Terminal 2: Start frontend

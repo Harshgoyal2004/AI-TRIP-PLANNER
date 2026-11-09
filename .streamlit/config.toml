@@ -1,0 +1,14 @@
+[theme]
+base = "light"
+primaryColor = "#116A6B"
+backgroundColor = "#F3F6F8"
+secondaryBackgroundColor = "#E6EDF2"
+textColor = "#17233F"
+linkColor = "#116A6B"
+borderColor = "#D3DCE5"
+baseRadius = "10px"
+font = "Public Sans:https://fonts.googleapis.com/css2?family=Public+Sans:wght@400;500;600;700&display=swap"
+headingFont = "Bricolage Grotesque:https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,600;12..96,800&display=swap"
+
+[client]
+toolbarMode = "minimal"

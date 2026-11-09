@@ -30,7 +30,7 @@ The toughest problem I solved in this project was fixing severe latency and hall
                         │          Tool Ecosystem                │
                         ├────────────┬──────────┬────────────────┤
                         │  Weather   │  Places  │  Currency      │
-                        │  Calculator│  Expense │  Arithmetic    │
+                        │  Expense calculator                    │
                         └────────────┴──────────┴────────────────┘
                                          │
                                          ▼
@@ -46,7 +46,7 @@ The toughest problem I solved in this project was fixing severe latency and hall
 ### Request Flow
 1. **User Input** → Streamlit UI captures travel query
 2. **API Call** → POST request to FastAPI `/query` endpoint
-3. **Graph Initialization** → `GraphBuilder` creates LangGraph workflow
+3. **Agent** → the LangGraph agent from `build_agent()` (built once, then reused) receives the query
 4. **Agent Execution** → LLM decides which tools to call based on system prompt
 5. **Tool Invocation** → Tools fetch real-time data from external APIs
 6. **Response Generation** → LLM synthesizes tool outputs into formatted itinerary
@@ -57,51 +57,22 @@ The toughest problem I solved in this project was fixing severe latency and hall
 ## 📁 Project Structure
 
 ```
-AI_Trip_Planner/
-│
-├── agent/                          # Core agentic workflow
-│   ├── __init__.py
-│   └── agentic_workflow.py        # LangGraph state machine
-│
-├── config/                         # Configuration files
-│   ├── __init__.py
-│   └── config.yaml                # LLM provider settings
-│
-├── exception/                      # Custom exceptions
-│   ├── __init__.py
-│   └── exception.py
-│
-├── logger/                         # Logging utilities
-│   ├── __init__.py
-│   └── logger.py                  # Centralized logger
-│
-├── prompt_library/                 # System prompts
-│   ├── __init__.py
-│   └── prompt.py                  # Agent instructions & output format
-│
-├── tools/                          # LangChain tools
-│   ├── __init__.py
-│   ├── arthamatic_op_tool.py      # Basic arithmetic operations
-│   ├── currency_conversion_tool.py # Currency exchange rates
-│   ├── expense_calculator_tool.py  # Budget calculations
-│   ├── place_search_tool.py       # Google Places & Tavily search
-│   └── weather_info_tool.py       # Weather forecasts
-│
-├── utils/                          # Helper modules
-│   ├── __init__.py
-│   ├── config_loader.py           # YAML config parser
-│   ├── currency_converter.py      # Currency API wrapper
-│   ├── expense_calculator.py      # Math utilities
-│   ├── model_loader.py            # LLM initialization
-│   ├── place_info_search.py       # Places API wrapper
-│   ├── save_to_document.py        # Markdown file generator
-│   └── weather_info.py            # Weather API wrapper
-│
-├── main.py                         # FastAPI application
-├── streamlit_app.py               # Streamlit frontend
-├── requirements.txt               # Python dependencies
-├── .env                           # API keys (gitignored)
-└── README.md                      # This file
+AI-TRIP-PLANNER/
+├── main.py                 # FastAPI backend: POST /query, GET /health
+├── streamlit_app.py        # Streamlit frontend
+├── agent.py                # Model choice + LangGraph agent loop (build_agent)
+├── prompt.py               # System prompt and itinerary format
+├── tools.py                # All 11 tools: weather, currency, places (Google → Tavily), calculator
+├── tests/
+│   ├── test_app.py         # Offline: tools (mocked APIs), FastAPI endpoints, agent graph
+│   └── test_integration.py # Opt-in: real APIs (-m integration) and a full trip (-m e2e)
+├── .streamlit/             # Streamlit theme (config.toml) and BACKEND_URL secret
+├── .devcontainer/          # GitHub Codespaces setup
+├── .env.name               # Template listing the required environment variables
+├── requirements.txt        # Pinned dependencies (incl. pytest)
+├── pyproject.toml          # pytest settings
+├── render.yaml             # Backend deployment (Render)
+└── DEPLOYMENT.md
 ```
 
 ---
@@ -109,222 +80,50 @@ AI_Trip_Planner/
 ## 🔧 Core Components
 
 ### 1. **main.py** - FastAPI Backend
-**Purpose**: Exposes REST API for the agent.
+- `POST /query` takes `{"question": "..."}` and returns `{"answer": "<markdown itinerary>"}`.
+- The agent is built once on the first request and reused (`lru_cache`).
+- The handler is a plain `def`, so FastAPI runs it in a threadpool and the slow LLM call doesn't block the server.
+- `GET /health` is used by the Streamlit sidebar's online/offline indicator.
+- CORS origins come from `ALLOWED_ORIGINS` (comma-separated, default `*`).
 
-**Key Functions**:
-- `query_travel_agent(query: QueryRequest)`: Main endpoint that processes user queries
-  - Initializes `GraphBuilder` with Groq LLM
-  - Invokes the LangGraph workflow
-  - Returns formatted itinerary as JSON
+### 2. **agent.py** - LangGraph Agent
+`build_agent()` picks the model, binds all 11 tools and compiles a two-node loop:
 
-**Technical Details**:
 ```python
-@app.post("/query")
-async def query_travel_agent(query: QueryRequest):
-    graph = GraphBuilder(model_provider="groq")
-    react_app = graph()
-    messages = {"messages": [HumanMessage(content=query.question)]}
-    output = react_app.invoke(messages)
-    return {"answer": output["messages"][-1].content}
+graph.add_edge(START, "agent")
+graph.add_conditional_edges("agent", tools_condition)  # tool calls -> "tools", otherwise END
+graph.add_edge("tools", "agent")
 ```
 
-**CORS Configuration**: Allows all origins (should be restricted in production)
+- **Model**: `MODEL_PROVIDER` = `groq` (default, `openai/gpt-oss-120b`) or `openai` (`gpt-4o-mini`); override the model with `MODEL_NAME`.
+- **Rate limits**: Groq calls retry 429s with backoff (`max_retries=6`); Groq's on-demand tier caps requests at ~8k tokens/minute.
+- **Logging**: every tool the model calls is logged once as `🔥 TOOL CALL: name(args)`.
 
----
+### 3. **prompt.py** - System Prompt
+Tells the model which tools it must call before answering, and the exact Markdown layout: weather, exchange rate,
+day-by-day itinerary with costs in ₹, daily totals and a final budget. Map links are built as
+`https://www.google.com/maps/search/?api=1&query=<Place>,+<City>` because the tools don't return URLs.
 
-### 2. **agent/agentic_workflow.py** - LangGraph State Machine
-**Purpose**: Orchestrates the agent's decision-making process.
+### 4. **tools.py** - Tools
+Each tool is a plain function with `@tool`; its docstring is the description the LLM sees, so they're kept short
+(every token is resent on each agent step). Tools return error messages as text instead of raising, so one failing
+API doesn't abort the whole plan.
 
-**Class**: `GraphBuilder`
+| Tool | Source |
+|------|--------|
+| `get_current_weather`, `get_weather_forecast` | OpenWeatherMap (°C) |
+| `get_exchange_rates`, `convert_currency` | ExchangeRate API |
+| `search_attractions`, `search_restaurants`, `search_activities`, `search_transportation` | Google Places (top 6, trimmed) → Tavily fallback when Google is unconfigured, errors, or finds nothing |
+| `estimate_total_hotel_cost`, `calculate_total_expense`, `calculate_daily_expense_budget` | Local arithmetic |
 
-**Key Methods**:
-1. `__init__(model_provider: str)`:
-   - Loads LLM (Groq Llama 3.1 70B by default)
-   - Initializes all tool classes
-   - Binds tools to LLM for function calling
-   
-2. `agent_function(state: MessagesState)`:
-   - Core agent logic
-   - Prepends system prompt to user query
-   - Invokes LLM with tool-calling capability
-   
-3. `build_graph()`:
-   - Constructs LangGraph state machine
-   - Defines nodes: `agent` (LLM) and `tools` (ToolNode)
-   - Sets up edges:
-     - `START → agent`
-     - `agent → tools` (conditional, if tool calls detected)
-     - `tools → agent` (feedback loop)
-     - `agent → END`
-
-**Graph Visualization**:
-```
-START → [Agent] ⇄ [Tools] → END
-         ↓
-    (Decision: Call tool or respond?)
-```
-
----
-
-### 3. **prompt_library/prompt.py** - System Prompt
-**Purpose**: Instructs the LLM on behavior and output format.
-
-**Key Sections**:
-1. **Critical Execution Rules**: Forces tool usage over hallucination
-2. **Requirements**: Specifies INR costs, Google Maps links, day-wise budgeting
-3. **Response Format**: Strict Markdown template with sections for:
-   - Weather Report
-   - Currency Exchange
-   - Day-by-Day Itinerary
-   - Cost Breakdown
-   - Logistics
-
-**Example Instruction**:
-```
-You are NOT a chat bot. You are a FUNCTION CALLING ENGINE.
-You MUST execute the following tools:
-- get_current_weather(place)
-- search_attractions(place)
-- calculate_daily_expense_budget(total, days)
-```
-
----
-
-### 4. **tools/** - LangChain Tool Ecosystem
-
-#### **place_search_tool.py**
-**Purpose**: Searches for attractions, restaurants, activities, and transport.
-
-**Tools Defined**:
-- `search_attractions(place: str)` → Google Places API
-- `search_restaurants(place: str)` → Google Places API
-- `search_activities(place: str)` → Tavily Search API
-- `search_transportation(place: str)` → Tavily Search API
-
-**Implementation Pattern**:
-```python
-class PlaceSearchTool:
-    def __init__(self):
-        self.google_tool = GooglePlaceSearchTool()
-        self.tavily_tool = TavilyPlaceSearchTool()
-        self.place_search_tool_list = self._setup_tools()
-    
-    def _setup_tools(self):
-        def search_attractions(place: str) -> str:
-            logger.info(f"🔥 TOOL TRIGGERED: search_attractions({place})")
-            return self.google_tool.search_attractions(place)
-        
-        return [StructuredTool.from_function(
-            func=search_attractions,
-            name="search_attractions",
-            description="Search for tourist attractions"
-        )]
-```
-
----
-
-#### **weather_info_tool.py**
-**Purpose**: Fetches current weather and forecasts.
-
-**Tools**:
-- `get_current_weather(place: str)` → OpenWeatherMap API
-- `get_weather_forecast(place: str, days: int)` → OpenWeatherMap API
-
-**API Integration**:
-```python
-class WeatherForecastTool:
-    def get_current_weather(self, place: str) -> str:
-        url = f"http://api.openweathermap.org/data/2.5/weather?q={place}&appid={self.api_key}"
-        response = requests.get(url)
-        data = response.json()
-        return f"Temperature: {data['main']['temp']}K, Condition: {data['weather'][0]['description']}"
-```
-
----
-
-#### **currency_conversion_tool.py**
-**Purpose**: Converts currencies and fetches exchange rates.
-
-**Tools**:
-- `get_exchange_rates(base_currency: str)` → ExchangeRate API
-- `convert_currency(amount: float, from_currency: str, to_currency: str)` → ExchangeRate API
-
-**Key Feature**: Returns rates for common currencies (USD, EUR, GBP, INR, etc.)
-
----
-
-#### **expense_calculator_tool.py**
-**Purpose**: Performs budget calculations.
-
-**Tools**:
-- `estimate_total_hotel_cost(price_per_night: str, total_days: str)` → Multiplication
-- `calculate_total_expense(costs: List[float])` → Summation
-- `calculate_daily_expense_budget(total_cost: str, days: str)` → Division
-
-**Type Handling**: Accepts strings and converts to floats to handle LLM output variability.
-
----
-
-### 5. **utils/** - Helper Modules
-
-#### **model_loader.py**
-**Purpose**: Initializes LLM based on config.
-
-**Supported Providers**:
-- **Groq**: `llama-3.1-70b-versatile` (default)
-- **OpenAI**: `gpt-4o-mini`
-
-**Code**:
-```python
-class ModelLoader:
-    def load_llm(self):
-        if self.model_provider == "groq":
-            return ChatGroq(model_name=self.model_name, api_key=groq_api_key)
-        elif self.model_provider == "openai":
-            return ChatOpenAI(model_name=self.model_name, api_key=openai_api_key)
-```
-
----
-
-#### **currency_converter.py**
-**Purpose**: Wrapper for ExchangeRate API.
-
-**Key Method**:
-```python
-def convert(self, amount: float, from_currency: str, to_currency: str) -> float:
-    url = f"https://v6.exchangerate-api.com/v6/{self.api_key}/pair/{from_currency}/{to_currency}/{amount}"
-    response = requests.get(url)
-    return response.json()['conversion_result']
-```
-
----
-
-#### **place_info_search.py**
-**Purpose**: Wrappers for Google Places and Tavily APIs.
-
-**Classes**:
-1. `GooglePlaceSearchTool`: Uses `langchain_google_community.GooglePlacesTool`
-2. `TavilyPlaceSearchTool`: Uses `langchain_tavily.TavilySearch`
-
----
-
-### 6. **streamlit_app.py** - Frontend
-**Purpose**: User interface for inputting queries and displaying results.
-
+### 5. **streamlit_app.py** - Frontend
 **Key Features**:
-- Text input for travel queries
-- POST request to `http://127.0.0.1:8000/query`
-- Markdown rendering of itinerary
-- Error handling with `st.error()`
-
-**Code Snippet**:
-```python
-with st.form(key="query_form"):
-    user_input = st.text_input("Enter your travel query:")
-    if st.form_submit_button("Plan My Trip"):
-        response = requests.post("http://127.0.0.1:8000/query", json={"question": user_input})
-        st.markdown(response.json()["answer"])
-```
+- Structured trip form (destination, starting city, days, budget, travel style, notes) that builds the query
+- Live boarding-pass summary that updates as you type
+- POST request to `$BACKEND_URL/query` (env var or Streamlit secret, default `http://localhost:8001`)
+- Itinerary rendered as Markdown, with a download button and per-session plan history in the sidebar
+- Backend online/offline indicator via `GET /health`, and clear errors for timeouts / connection failures
+- Theme in `.streamlit/config.toml`; layout CSS at the top of `streamlit_app.py`
 
 ---
 
@@ -384,12 +183,17 @@ source venv/bin/activate  # On Windows: venv\Scripts\activate
 pip install -r requirements.txt
 
 # 4. Set up environment variables
-cp .env.example .env
+cp .env.name .env
 # Edit .env and add your API keys
 
 # 5. Run the backend
 python main.py
-# Backend runs on http://127.0.0.1:8000
+# Backend runs on http://127.0.0.1:8001
+
+# Tests
+pytest                  # unit + API tests: offline, no keys, <1s
+pytest -m integration   # every tool against its real API (needs keys in .env, ~10s)
+pytest -m e2e           # one full trip through the LLM (~1-2 min, uses Groq tokens)
 
 # 6. Run the frontend (in a new terminal)
 streamlit run streamlit_app.py
@@ -426,18 +230,21 @@ streamlit run streamlit_app.py
 ## 🧰 Tool System
 
 ### Tool Architecture
-Each tool follows this pattern:
-1. **Tool Class**: Initializes API clients and defines tool list
-2. **Setup Method**: Creates `StructuredTool` instances
-3. **Function Wrapper**: Logs execution and calls underlying API
+Each tool is a plain `@tool` function in `tools.py`. API keys are read from the environment when the tool
+runs, so importing the tools never fails and tests can run without keys.
 
 ### Tool Registration Flow
 ```python
-# In GraphBuilder.__init__:
-self.weather_tools = WeatherInfoTool()
-self.tools.extend(self.weather_tools.weather_tool_list)
-self.llm_with_tools = self.llm.bind_tools(tools=self.tools)
+# tools.py
+ALL_TOOLS = [get_current_weather, get_weather_forecast, get_exchange_rates, ...]
+
+# agent.py
+llm = load_llm(provider).bind_tools(ALL_TOOLS)
+graph.add_node("tools", ToolNode(ALL_TOOLS))
 ```
+
+To add a tool: write an `@tool` function in `tools.py`, add it to `ALL_TOOLS`, and mention it in the prompt if
+it should always be called.
 
 ### Tool Calling Mechanism
 1. LLM receives user query + system prompt
@@ -469,7 +276,7 @@ A: LangGraph provides:
 - **Stateful execution**: Maintains conversation history across tool calls
 - **Conditional routing**: Dynamically decides whether to call tools or end
 - **Cyclic flows**: Allows agent-tool feedback loops (not possible in linear chains)
-- **Debugging**: Visual graph representation (`my_graph.png`)
+- **Debugging**: Visual graph representation (`build_agent().get_graph().draw_mermaid_png()`)
 
 ---
 
@@ -552,7 +359,7 @@ A:
 **Q: How do you debug when the agent doesn't call a tool?**
 A:
 1. **Check Logs**: Look for `🔥 TOOL TRIGGERED` messages
-2. **Inspect Graph**: View `my_graph.png` to verify tool nodes exist
+2. **Inspect Graph**: Render `build_agent().get_graph().draw_mermaid_png()` to verify tool nodes exist
 3. **Review Prompt**: Ensure tool descriptions are clear
 4. **Test LLM**: Try different models (Groq vs OpenAI) to see if it's model-specific
 5. **Add Debug Prints**: Log `msg.tool_calls` in `main.py` to see what LLM attempted
@@ -571,24 +378,17 @@ A:
 
 ### Code Quality
 
-**Q: Why use `StructuredTool.from_function` instead of `@tool` decorator?**
-A: `StructuredTool.from_function` provides:
-- **Explicit control**: Manually define name, description, and schema
-- **Class methods**: Works with instance methods (e.g., `self.api_key`)
-- **Type safety**: Enforces argument types via Pydantic
-
-The `@tool` decorator is simpler but less flexible for complex tools.
+**Q: Why plain `@tool` functions instead of tool classes?**
+A: The tools hold no state (API keys are read from the environment when called), so classes added a layer
+without adding anything. `@tool` still builds a Pydantic schema from the type hints (so `"2500"` is coerced to
+`2500.0`) and uses the docstring as the description the LLM sees.
 
 ---
 
 **Q: How do you ensure consistent logging across modules?**
-A: Centralized logger in `logger/logger.py`:
-```python
-import logging
-logger = logging.getLogger(__name__)
-logger.setLevel(logging.INFO)
-```
-All modules import this logger, ensuring uniform formatting and output.
+A: `main.py` configures logging once with `logging.basicConfig`; every module just does
+`logger = logging.getLogger(__name__)`. Tool calls are logged in one place, the agent node in `agent.py`,
+so each call appears exactly once.
 
 ---
 

@@ -10,3 +10,12 @@ wheels/
 .venv
 env
 .env
+venv/
+
+# Local env / OS / app output
+.env.local
+.DS_Store
+output/
+.pytest_cache/
+.remember/
+.playwright-mcp/
